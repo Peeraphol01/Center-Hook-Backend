@@ -1,0 +1,116 @@
+paths:
+  /api/forward-logs:
+    get:
+      tags:
+        - Forward Logs
+      summary: ค้นหา forward log แบบแบ่งหน้า
+      description: ใช้ debug การส่งต่อ (ดูประวัติแชตใช้ LINE OA Manager) รายการไม่มี payload และ response_body (ดูได้ที่ GET /api/forward-logs/{id})
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: direction
+          schema:
+            type: string
+            enum:
+              - INBOUND
+              - OUTBOUND
+          description: INBOUND = event จาก LINE ที่ส่งต่อให้ project, OUTBOUND = ข้อความที่ project ส่งผ่าน center-hook
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - SUCCESS
+              - FAILED
+              - SKIPPED
+        - in: query
+          name: project
+          schema:
+            type: string
+          example: newlabor
+        - in: query
+          name: line_user_id
+          schema:
+            type: string
+        - in: query
+          name: event_type
+          schema:
+            type: string
+          example: message
+        - in: query
+          name: from
+          description: เริ่มจากเวลานี้ (ISO date หรือ datetime)
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          description: ถึงเวลานี้ (ISO date หรือ datetime)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: รายการ forward log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForwardLogListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/forward-logs/{id}:
+    get:
+      tags:
+        - Forward Logs
+      summary: ดู forward log หนึ่งรายการพร้อม payload เต็ม
+      description: ใช้ debug การส่งต่อ
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Forward log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForwardLog"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: ไม่พบ forward log (FORWARD_LOG_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"

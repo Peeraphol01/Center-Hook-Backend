@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ForwardLog {
+  id             Int       @id @default(autoincrement())
+  // INBOUND = event จาก LINE ที่ส่งต่อให้ project | OUTBOUND = ข้อความที่ project ส่งผ่าน center-hook ไป LINE
+  direction      String    @db.VarChar(10)
+  // id ของ request ที่รับเข้ามา (event จาก LINE ใน request เดียวกันใช้ค่าเดียวกัน)
+  requestId      String    @map("request_id") @db.VarChar(64)
+  webhookEventId String?   @map("webhook_event_id") @db.VarChar(64)
+  // ชื่อ project (ค่า smm_app หรือ default)
+  project        String    @db.VarChar(50)
+  targetUrl      String?   @map("target_url") @db.VarChar(1024)
+  lineUserId     String?   @map("line_user_id") @db.VarChar(64)
+  eventType      String    @map("event_type") @db.VarChar(50)
+  messageType    String?   @map("message_type") @db.VarChar(50)
+  content        String?   @db.Text
+  payload        Json
+  // SUCCESS | FAILED | SKIPPED
+  status         String    @db.VarChar(20)
+  httpStatus     Int?      @map("http_status")
+  responseBody   String?   @map("response_body") @db.Text
+  errorMessage   String?   @map("error_message") @db.Text
+  attempts       Int       @default(0)
+  durationMs     Int       @default(0) @map("duration_ms")
+  forwardedAt    DateTime? @map("forwarded_at") @db.Timestamp(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([project, createdAt])
+  @@index([direction, createdAt])
+  @@index([lineUserId, createdAt])
+  @@map("forward_logs")
+}
+
+
+model Account {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique @db.VarChar(100)
+  passwordHash String   @map("password_hash") @db.VarChar(512)
+  // owner | manager | admin (ลำดับสูงไปต่ำ จัดการได้เฉพาะ role ที่ต่ำกว่าตัวเอง)
+  role         String   @db.VarChar(20)
+  // active | inactive
+  status       String   @default("active") @db.VarChar(20)
+  fullName     String   @map("full_name") @db.VarChar(255)
+  // จำนวนครั้งที่ใส่รหัสผิดติดกัน (ครบ LOGIN_MAX_FAILED_ATTEMPTS = ล็อกถึง locked_until แล้วเริ่มนับใหม่)
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamp(3)
+  createdBy    Int?     @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamp(3)
+
+  creator         Account?            @relation("AccountCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  createdAccounts Account[]           @relation("AccountCreatedBy")
+  sessions        UserSession[]
+  permissions     AccountPermission[]
+
+  @@index([role])
+  @@map("accounts")
+}
+
+model AccountPermission {
+  id         Int      @id @default(autoincrement())
+  accountId  Int      @map("account_id")
+  // ชื่อสิทธิ์ เช่น forward_logs:read (รายการที่รองรับอยู่ใน src/config/permission.config.ts)
+  permission String   @db.VarChar(100)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([accountId, permission])
+  @@index([permission])
+  @@map("account_permissions")
+}
+
+model UserSession {
+  id               Int       @id @default(autoincrement())
+  accountId        Int       @map("account_id")
+  // HMAC ของ refresh token ล่าสุด (หมุนทุกครั้งที่ refresh)
+  refreshTokenHash String    @map("refresh_token_hash") @db.VarChar(512)
+  ipAddress        String?   @map("ip_address") @db.VarChar(64)
+  userAgent        String?   @map("user_agent") @db.VarChar(512)
+  // รหัสเครื่องจากคุกกี้ ch_device ของหน้าเว็บ (1 บัญชีใช้ได้ 1 เครื่อง null = ไม่รู้เครื่อง เช่นเรียก API ตรง)
+  deviceId         String?   @map("device_id") @db.VarChar(128)
+  isActive         Boolean   @default(true) @map("is_active")
+  lastActiveAt     DateTime  @default(now()) @map("last_active_at") @db.Timestamp(3)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamp(3)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamp(3)
+  // เหตุที่ถูก revoke: logout, relogin, replaced (ถูกเครื่องอื่นเตะออก), access_changed, reuse_detected
+  revokeReason     String?   @map("revoke_reason") @db.VarChar(32)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamp(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([accountId, isActive])
+  @@map("user_sessions")
+}
+
+model Webhook {
+  id         Int      @id @default(autoincrement())
+  // ค่า smm_app ในปุ่ม (ขากลับ) และใน body ของ /api/line/push (ขาไป)
+  // null = webhook default: รับ event ที่ไม่มี smm_app หรือ smm_app ไม่ตรงกับ webhook ไหน (มีได้แถวเดียว ตรวจใน service)
+  smmApp     String?  @unique @map("smm_app") @db.VarChar(50)
+  webhookUrl String   @map("webhook_url") @db.VarChar(1024)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamp(3)
+
+  @@map("webhooks")
+}
+
+// ชื่อและรูปโปรไฟล์ LINE (cache จาก LINE API ใช้แสดงในหน้าแชทของ log และค้นหาด้วยชื่อ)
+// user (U...) อ่านจาก /v2/bot/profile, group (C...) จาก /v2/bot/group/{id}/summary
+model LineProfile {
+  lineUserId  String   @id @map("line_user_id") @db.VarChar(64)
+  // null = ดึงจาก LINE ไม่ได้ (เช่นผู้ใช้บล็อก OA) จะลองใหม่เมื่อ cache หมดอายุ
+  displayName String?  @map("display_name") @db.VarChar(255)
+  pictureUrl  String?  @map("picture_url") @db.VarChar(1024)
+  fetchedAt   DateTime @map("fetched_at") @db.Timestamp(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamp(3)
+
+  @@map("line_profiles")
+}
+
+// บันทึกการใช้งานของผู้ดูแล/ระบบไว้ตรวจสอบย้อนหลัง (append-only: trigger ใน DB ห้าม UPDATE, ลบได้เฉพาะงานลบตามอายุ)
+model AuditLog {
+  id             BigInt   @id @default(autoincrement())
+  occurredAt     DateTime @default(now()) @map("occurred_at") @db.Timestamp(3)
+  // ชื่อเหตุการณ์ เช่น auth.login.failed, admin.update, webhook.delete (รายการอยู่ใน src/types/audit.types.ts)
+  action         String   @db.VarChar(100)
+  // success | failure | denied
+  result         String   @db.VarChar(20)
+  // info | warning | critical (critical ส่งแจ้งเตือนเมื่อตั้ง SECURITY_ALERT_LINE_TO)
+  severity       String   @default("info") @db.VarChar(20)
+  // ผู้ทำรายการ (null = ยังไม่ login หรือเป็นระบบภายนอก) เก็บ username ซ้ำไว้เผื่อบัญชีถูกลบ
+  actorAccountId Int?     @map("actor_account_id")
+  actorUsername  String?  @map("actor_username") @db.VarChar(100)
+  sessionId      Int?     @map("session_id")
+  targetType     String?  @map("target_type") @db.VarChar(50)
+  targetId       String?  @map("target_id") @db.VarChar(100)
+  ipAddress      String?  @map("ip_address") @db.VarChar(64)
+  // ตำแหน่งโดยประมาณของ IP ตอนเกิดเหตุการณ์ (MaxMind GeoLite2) ประเทศเป็น ISO 3166-1 alpha-2 เช่น TH
+  geoCountry     String?  @map("geo_country") @db.VarChar(2)
+  geoCity        String?  @map("geo_city") @db.VarChar(100)
+  userAgent      String?  @map("user_agent") @db.VarChar(512)
+  requestId      String?  @map("request_id") @db.VarChar(255)
+  method         String?  @db.VarChar(10)
+  path           String?  @db.VarChar(512)
+  // รายละเอียดเพิ่ม เช่น { before, after, reason } (ห้ามมีรหัสผ่าน/token)
+  metadata       Json?
+
+  @@index([occurredAt])
+  @@index([action, occurredAt])
+  @@index([actorAccountId, occurredAt])
+  @@index([ipAddress, occurredAt])
+  @@index([severity, occurredAt])
+  @@map("audit_logs")
+}

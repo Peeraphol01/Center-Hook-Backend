@@ -1,0 +1,221 @@
+paths:
+  /api/webhooks:
+    get:
+      tags:
+        - Webhooks
+      summary: รายการ webhook ปลายทาง
+      description: >-
+        smm_app → webhook_url ที่ใช้ส่งต่อ event (smm_app ที่มีในตารางนี้เท่านั้นที่ส่งข้อความผ่าน /api/line/push ได้)
+        webhook ที่ smm_app = null คือ default (รับ event ที่ไม่ใช่ postback, ไม่มี smm_app, smm_app ว่าง
+        หรือไม่ตรงกับ webhook ไหน เทียบแบบตรงตัวทุกตัวอักษร) cache 30 วินาที แก้ผ่าน API มีผลทันที
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: รายการ webhook เรียงตาม id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags:
+        - Webhooks
+      summary: เพิ่ม webhook
+      description: >-
+        ต้องส่ง smm_app ทุกครั้ง: ชื่อ project (a-z 0-9 _ - ไม่เกิน 50 ตัว) หรือ null = webhook default (มีได้แถวเดียว)
+        ส่ง "" หรือไม่ส่ง field นี้ตอบ 400 | DB ใหม่ตาราง webhooks ว่าง ต้องเพิ่มเองผ่าน route นี้
+        ถ้ามี webhook default อยู่แล้วตอบ 409 DEFAULT_WEBHOOK_EXISTS (เปลี่ยน URL ให้ใช้ PATCH)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - smm_app
+                - webhook_url
+              properties:
+                smm_app:
+                  type: string
+                  nullable: true
+                  pattern: ^[a-z0-9_-]{1,50}$
+                  description: null = webhook default (ต้องเขียน null ให้ชัด) ห้ามใช้ "default" เพราะเป็น path ของ webhook default
+                  example: newlabor
+                webhook_url:
+                  type: string
+                  format: uri
+                  example: https://labor-api.example.com/api/line/webhook
+            examples:
+              project:
+                summary: webhook ของ project
+                value:
+                  smm_app: newlabor
+                  webhook_url: https://labor-api.example.com/api/line/webhook
+              default:
+                summary: webhook default (event ที่ไม่มี smm_app / ค่าว่าง / ไม่ตรงกับแถวไหน)
+                value:
+                  smm_app: null
+                  webhook_url: https://default.example.com/webhook
+      responses:
+        "201":
+          description: สร้างแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: smm_app ซ้ำ (WEBHOOK_CONFLICT) หรือมี webhook default อยู่แล้ว (DEFAULT_WEBHOOK_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/webhooks/{smm_app}:
+    patch:
+      tags:
+        - Webhooks
+      summary: แก้ webhook
+      description: >-
+        อ้าง webhook ด้วย smm_app ใน path (webhook default ใช้ /api/webhooks/default) ส่งเฉพาะ field ที่ต้องการเปลี่ยน
+        เปลี่ยน smm_app เป็น null = ย้ายเป็น webhook default
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSmmApp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                smm_app:
+                  type: string
+                  nullable: true
+                  pattern: ^[a-z0-9_-]{1,50}$
+                webhook_url:
+                  type: string
+                  format: uri
+            example:
+              webhook_url: https://labor-api.example.com/api/line/webhook
+      responses:
+        "200":
+          description: แก้แล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: ไม่พบ webhook (WEBHOOK_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: smm_app ซ้ำ (WEBHOOK_CONFLICT) หรือมี webhook default อยู่แล้ว (DEFAULT_WEBHOOK_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    delete:
+      tags:
+        - Webhooks
+      summary: ลบ webhook
+      description: >-
+        อ้าง webhook ด้วย smm_app ใน path (webhook default ใช้ /api/webhooks/default)
+        ลบ webhook default แล้ว event ที่ไม่มี smm_app จะถูกบันทึกเป็น SKIPPED
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSmmApp"
+      responses:
+        "200":
+          description: ลบแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: ไม่พบ webhook (WEBHOOK_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+components:
+  parameters:
+    WebhookSmmApp:
+      in: path
+      name: smm_app
+      required: true
+      description: smm_app ของ webhook ที่ต้องการ หรือ default = webhook default (smm_app = null)
+      schema:
+        type: string
+        pattern: ^[a-z0-9_-]{1,50}$
+      examples:
+        project:
+          value: newlabor
+        default:
+          value: default
+  schemas:
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        smm_app:
+          type: string
+          nullable: true
+          description: null = webhook default
+          example: newlabor
+        webhook_url:
+          type: string
+          example: https://labor-api.example.com/api/line/webhook
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Webhook deleted.

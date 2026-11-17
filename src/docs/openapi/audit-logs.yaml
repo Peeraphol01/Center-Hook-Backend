@@ -1,0 +1,362 @@
+paths:
+  /api/audit-logs:
+    get:
+      tags:
+        - Audit Logs
+      summary: ค้นหาประวัติการใช้งาน (audit log) แบบแบ่งหน้า
+      description: >-
+        ใช้ตรวจสอบย้อนหลังว่าใครทำอะไร จาก IP ไหน เมื่อไหร่ (login, refresh, แก้บัญชี/สิทธิ์, แก้ webhook, ถูกปฏิเสธ, IP ถูกบล็อก ฯลฯ)
+        | อ่านอย่างเดียว ไม่มี API แก้/ลบ (DB ห้าม UPDATE ด้วย trigger) ลบอัตโนมัติเมื่อเก่ากว่า AUDIT_LOG_RETENTION_DAYS
+        | ต้องมีสิทธิ์ audit_logs:read
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: action
+          description: ชื่อเหตุการณ์แบบตรงตัว
+          schema:
+            $ref: "#/components/schemas/AuditAction"
+        - in: query
+          name: action_prefix
+          description: ขึ้นต้นด้วย เช่น auth. = ทุกเหตุการณ์ของ login/session, admin. = การจัดการบัญชี
+          schema:
+            type: string
+          example: auth.
+        - in: query
+          name: result
+          schema:
+            type: string
+            enum:
+              - success
+              - failure
+              - denied
+        - in: query
+          name: severity
+          schema:
+            $ref: "#/components/schemas/AuditSeverity"
+        - in: query
+          name: actor_account_id
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: actor_username
+          description: username ของผู้ทำรายการ (login ผิด = username ที่พิมพ์มา แม้ไม่มีบัญชีจริง)
+          schema:
+            type: string
+        - in: query
+          name: ip_address
+          schema:
+            type: string
+          example: 203.0.113.10
+        - in: query
+          name: target_type
+          schema:
+            type: string
+            enum:
+              - account
+              - webhook
+        - in: query
+          name: target_id
+          schema:
+            type: string
+        - in: query
+          name: request_id
+          description: ค่าเดียวกับ X-Request-Id ใช้ดู log ของ process คู่กัน
+          schema:
+            type: string
+        - in: query
+          name: from
+          description: เริ่มจากเวลานี้ (ISO date หรือ datetime)
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          description: ถึงเวลานี้ (ISO date หรือ datetime)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: รายการ audit log (ใหม่ไปเก่า)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLog"
+                  pagination:
+                    $ref: "#/components/schemas/AuditLogPagination"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/audit-logs/security-summary:
+    get:
+      tags:
+        - Audit Logs
+      summary: สรุปความผิดปกติย้อนหลัง
+      description: >-
+        จำนวนแต่ละเหตุการณ์, IP และ username ที่ login ผิดบ่อยที่สุด, IP ที่ถูกปฏิเสธบ่อยที่สุด (403 / IP นอกวง / token หรือ signature ผิด)
+        และเหตุการณ์ warning/critical ล่าสุด 50 รายการ | ต้องมีสิทธิ์ audit_logs:read
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: hours
+          description: ย้อนหลังกี่ชั่วโมง
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2160
+            default: 24
+        - in: query
+          name: top
+          description: จำนวนอันดับของแต่ละรายการ
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: สรุปความผิดปกติ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from:
+                    type: string
+                    format: date-time
+                  to:
+                    type: string
+                    format: date-time
+                  counts_by_action:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        action:
+                          $ref: "#/components/schemas/AuditAction"
+                        count:
+                          type: integer
+                  top_failed_login_ips:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ip_address:
+                          type: string
+                        count:
+                          type: integer
+                  top_failed_login_usernames:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        username:
+                          type: string
+                        count:
+                          type: integer
+                  top_denied_ips:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ip_address:
+                          type: string
+                        count:
+                          type: integer
+                  recent_alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLog"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/audit-logs/{id}:
+    get:
+      tags:
+        - Audit Logs
+      summary: ดู audit log หนึ่งรายการ
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]{0,18}$"
+      responses:
+        "200":
+          description: Audit log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLog"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: ไม่พบ audit log (AUDIT_LOG_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+components:
+  schemas:
+    AuditAction:
+      type: string
+      enum:
+        - auth.login.success
+        - auth.login.failed
+        - auth.login.new_ip
+        - auth.login.blocked
+        - auth.login.device_conflict
+        - auth.session.replaced
+        - auth.account.locked
+        - auth.logout
+        - auth.refresh.success
+        - auth.refresh.failed
+        - auth.refresh.reuse_detected
+        - auth.password.changed
+        - auth.password.change_failed
+        - admin.create
+        - admin.update
+        - admin.delete
+        - webhook.create
+        - webhook.update
+        - webhook.delete
+        - access.denied
+        - security.ip_blocked
+        - security.brute_force_suspected
+        - line.webhook.invalid_signature
+        - line.push.unauthorized
+      description: >-
+        auth.login.new_ip = login สำเร็จจาก IP ที่บัญชีไม่เคยใช้ | auth.login.device_conflict = รหัสถูกแต่บัญชีใช้อยู่บนเครื่องอื่น (ตอบ 409)
+        | auth.session.replaced = ยืนยัน login เครื่องใหม่แล้วเตะเครื่องเดิมออก (critical แจ้งเตือนเข้า LINE) | auth.refresh.reuse_detected = refresh token ที่หมุนไปแล้วถูกนำกลับมาใช้ (session ถูก revoke ทันที)
+        | security.brute_force_suspected = login ผิดจาก IP เดียวครบ SECURITY_BRUTE_FORCE_THRESHOLD ครั้งใน SECURITY_BRUTE_FORCE_WINDOW_MINUTES นาที
+    AuditSeverity:
+      type: string
+      enum:
+        - info
+        - warning
+        - critical
+      description: critical ส่งแจ้งเตือนเข้า LINE เมื่อตั้ง SECURITY_ALERT_LINE_TO
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+          description: BIGINT ส่งเป็น string
+          example: "1024"
+        occurred_at:
+          type: string
+          format: date-time
+        action:
+          $ref: "#/components/schemas/AuditAction"
+        result:
+          type: string
+          enum:
+            - success
+            - failure
+            - denied
+        severity:
+          $ref: "#/components/schemas/AuditSeverity"
+        actor_account_id:
+          type: integer
+          nullable: true
+        actor_username:
+          type: string
+          nullable: true
+        session_id:
+          type: integer
+          nullable: true
+        target_type:
+          type: string
+          nullable: true
+          example: account
+        target_id:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+          example: 203.0.113.10
+        geo_country:
+          type: string
+          nullable: true
+          description: ประเทศโดยประมาณของ IP (ISO 3166-1 alpha-2, MaxMind GeoLite2) null = หาไม่เจอ เช่น IP ภายใน หรือไม่ได้ตั้ง MAXMIND_*
+          example: TH
+        geo_city:
+          type: string
+          nullable: true
+          description: เมืองโดยประมาณของ IP (ภาษาอังกฤษ) ความแม่นยำต่ำกว่าระดับประเทศ
+          example: Bangkok
+        user_agent:
+          type: string
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+        method:
+          type: string
+          nullable: true
+          example: PATCH
+        path:
+          type: string
+          nullable: true
+          example: /api/admins/3
+        metadata:
+          type: object
+          nullable: true
+          description: รายละเอียดเพิ่ม เช่น { before, after } ของการแก้ไข หรือ { reason } ของ login ผิด (ไม่มีรหัสผ่าน/token)
+          example:
+            before:
+              role: admin
+            after:
+              role: manager
+    AuditLogPagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer

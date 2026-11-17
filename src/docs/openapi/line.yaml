@@ -1,0 +1,211 @@
+paths:
+  /api/line/webhook:
+    post:
+      tags:
+        - LINE
+      summary: รับ webhook จาก LINE OA
+      description: >-
+        ตั้ง URL นี้เป็น Webhook URL ใน LINE Developers Console ระบบตรวจ x-line-signature ด้วย LINE_CHANNEL_SECRET
+        แล้วตอบ 200 ทันที จากนั้นส่งต่อทีละ event ไป project ปลายทางเบื้องหลัง (เซ็น signature ใหม่ด้วย secret เดิม)
+        และบันทึกผลลง forward log ข้อความที่พิมพ์ว่า "id" center-hook ตอบ "Your user ID: <userId>" ผ่าน Reply API ให้เอง
+        (บันทึก log OUTBOUND project = default, event_type = reply) แล้วยังส่งต่อ event ไป webhook default ตามปกติ
+        ไม่มี rate limit ที่ route นี้ เรียกจาก Swagger โดยตรงจะไม่ผ่านเพราะต้องมี signature ที่ถูกต้อง
+      parameters:
+        - in: header
+          name: x-line-signature
+          required: true
+          schema:
+            type: string
+          description: ขากลับ HMAC-SHA256 ของ raw body ทั้งก้อนด้วย LINE_CHANNEL_SECRET ใน .env แบบ base64 (LINE เป็นคนเซ็น)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destination:
+                  type: string
+                  example: U0123456789abcdef0123456789abcdef
+                events:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: true
+              example:
+                destination: U0123456789abcdef0123456789abcdef
+                events:
+                  - type: message
+                    webhookEventId: 01HZXK9V3M7Q2B8N4R6T5Y1W0E
+                    replyToken: 0f3779fba3b349968c5d07db31eab56f
+                    source:
+                      type: user
+                      userId: U4af4980629...
+                    message:
+                      type: text
+                      text: สวัสดี
+      responses:
+        "200":
+          description: รับ webhook แล้ว (การส่งต่อทำเบื้องหลัง ดูผลที่ GET /api/forward-logs)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: LINE webhook received.
+                  received:
+                    type: integer
+                    description: จำนวน event ใน request
+                    example: 1
+        "400":
+          description: Body ไม่ใช่ JSON object (VALIDATION_ERROR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มีหรือ signature ไม่ถูกต้อง (INVALID_LINE_SIGNATURE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status_code: 401
+                code: INVALID_LINE_SIGNATURE
+                message: LINE signature is invalid.
+                request_id: 2f0c6a1e-6c55-4b8e-9b9e-3d7e0f6d2a10
+        "413":
+          description: Body ใหญ่เกิน 1MB (PAYLOAD_TOO_LARGE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: ยังไม่ได้ตั้ง LINE_CHANNEL_SECRET (LINE_WEBHOOK_NOT_CONFIGURED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/line/push:
+    post:
+      tags:
+        - LINE
+      summary: ส่ง push message ไป LINE แทน project (ขาไป)
+      description: >-
+        project ยืนยันตัวด้วย Authorization: Bearer <LINE_CHANNEL_ACCESS_TOKEN> และระบุ smm_app ของตัวเอง (ต้องมีในตาราง webhooks) center-hook ตัด smm_app และ retry_key ออก
+        ส่ง { to, messages } ไป LINE ด้วย LINE_CHANNEL_ACCESS_TOKEN (retry_key ส่งเป็น X-Line-Retry-Key) บันทึก forward log
+        direction OUTBOUND แล้วตอบ status และ body ของ LINE กลับตามจริง ส่งครั้งเดียวไม่ retry เอง
+      security:
+        - lineToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - smm_app
+                - to
+                - messages
+              properties:
+                smm_app:
+                  type: string
+                  description: ชื่อ project ต้องมีในตาราง webhooks (/api/webhooks)
+                  example: newlabor
+                to:
+                  type: string
+                  description: LINE userId ผู้รับ
+                  example: U4af4980629a1b2c3d4e5f60718293a4b
+                retry_key:
+                  type: string
+                  format: uuid
+                  description: ส่งค่าเดิมทุกครั้งที่ retry ข้อความเดียวกัน LINE จะไม่ส่งซ้ำ
+                  example: 3f6c2a8e-91d4-4b7a-a0e5-6d2c8f1b9e47
+                messages:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  description: LINE message objects ส่งต่อให้ LINE ตามเดิม (ปุ่มควรมี smm_app=<ชื่อ project> ใน postback data เพื่อให้ขากลับมาถึง project)
+                  items:
+                    type: object
+                    additionalProperties: true
+              example:
+                smm_app: newlabor
+                to: U4af4980629a1b2c3d4e5f60718293a4b
+                retry_key: 3f6c2a8e-91d4-4b7a-a0e5-6d2c8f1b9e47
+                messages:
+                  - type: flex
+                    altText: กรุณาตรวจสอบข้อมูล 62411170000158
+                    contents:
+                      type: bubble
+                      body:
+                        type: box
+                        layout: vertical
+                        contents:
+                          - type: text
+                            text: กรุณาตรวจสอบข้อมูล
+                      footer:
+                        type: box
+                        layout: horizontal
+                        contents:
+                          - type: button
+                            action:
+                              type: postback
+                              label: ถูกต้อง
+                              data: smm_app=newlabor&token=k3Jx9QmT2vLp8RwN5yHc0ZbF7dGs4AeU
+                              displayText: ถูกต้อง
+      responses:
+        "200":
+          description: LINE รับข้อความแล้ว (body ของ LINE)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                sentMessages:
+                  - id: "534215478920386561"
+                    quoteToken: IStG5h1Tz7b0Bv4Lq9Rk2Wx8Yc3Nm6Pa1Df5Gh7Jk0
+        "400":
+          description: body ผิดรูปแบบ (VALIDATION_ERROR), smm_app ไม่มีในตาราง webhooks (UNKNOWN_SMM_APP) หรือ LINE ปฏิเสธข้อความ (body ของ LINE)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: ไม่มี Bearer token หรือไม่ตรงกับ LINE_CHANNEL_ACCESS_TOKEN (INVALID_ACCESS_TOKEN)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: retry_key นี้ LINE รับไปแล้วจากรอบก่อน (ถือว่าส่งสำเร็จ)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "429":
+          description: ติด rate limit ของ LINE หรือโควต้ารายเดือนหมด (body ของ LINE มีคำว่า monthly limit)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                message: You have reached your monthly limit.
+        "502":
+          description: เรียก LINE ไม่ได้หรือ timeout (LINE_API_UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: ยังไม่ได้ตั้ง LINE_CHANNEL_ACCESS_TOKEN (LINE_PUSH_NOT_CONFIGURED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

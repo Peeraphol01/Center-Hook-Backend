@@ -1,0 +1,246 @@
+components:
+  responses:
+    AdminRuleViolation:
+      description: >-
+        ผิดกฎการจัดการบัญชี: FORBIDDEN (ไม่มีสิทธิ์ของ route) | CANNOT_MANAGE_OWN_ACCOUNT (จัดการตัวเองใช้ /api/auth/me)
+        | TARGET_ROLE_NOT_MANAGEABLE (เป้าหมาย role เท่ากันหรือสูงกว่า) | ROLE_NOT_ASSIGNABLE (กำหนด role เท่ากันหรือสูงกว่าตัวเอง)
+        | PERMISSIONS_NOT_GRANTABLE (ให้สิทธิ์ที่ตัวเองไม่มี permissions = รายการที่ให้ไม่ได้)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            status_code: 403
+            code: PERMISSIONS_NOT_GRANTABLE
+            message: "Cannot grant permissions you do not have: admins:delete"
+            request_id: 2f0c6a1e-6c55-4b8e-9b9e-3d7e0f6d2a10
+            permissions:
+              - admins:delete
+    AdminBadRequest:
+      description: ข้อมูลไม่ผ่าน (VALIDATION_ERROR) หรือสิทธิ์ขาด dependency (PERMISSION_DEPENDENCY_NOT_SATISFIED permissions = สิทธิ์ที่ต้องเพิ่ม)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationErrorResponse"
+    AdminNotFound:
+      description: ไม่พบบัญชี (ADMIN_NOT_FOUND)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  parameters:
+    AccountId:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+paths:
+  /api/admins:
+    get:
+      tags:
+        - Admins
+      summary: รายการบัญชีผู้ดูแลทั้งหมด
+      description: can_manage = ผู้เรียกแก้/ลบบัญชีนั้นได้ (role ต่ำกว่าและไม่ใช่ตัวเอง)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: รายการบัญชี
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Account"
+                        - type: object
+                          properties:
+                            can_manage:
+                              type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags:
+        - Admins
+      summary: สร้างบัญชีผู้ดูแล (ต้องระบุ permissions)
+      description: >-
+        ต้องมีสิทธิ์ admins:create | role ต้องต่ำกว่าผู้สร้าง (owner สร้าง manager/admin, manager สร้าง admin)
+        | permissions ให้ได้เฉพาะที่ผู้สร้างมี และต้องครบ dependency (เช่น webhooks:create ต้องมี webhooks:read)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+                - full_name
+                - role
+                - permissions
+              properties:
+                username:
+                  type: string
+                  pattern: "^[a-zA-Z0-9._-]{3,100}$"
+                  example: somchai
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 128
+                  example: Somchai@123456
+                full_name:
+                  type: string
+                  example: สมชาย ใจดี
+                role:
+                  $ref: "#/components/schemas/Role"
+                status:
+                  type: string
+                  enum:
+                    - active
+                    - inactive
+                  default: active
+                permissions:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Permission"
+                  example:
+                    - forward_logs:read
+                    - webhooks:read
+      responses:
+        "201":
+          description: สร้างแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountWithPermissions"
+        "400":
+          $ref: "#/components/responses/AdminBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRuleViolation"
+        "409":
+          description: username ซ้ำ (USERNAME_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/admins/{id}:
+    get:
+      tags:
+        - Admins
+      summary: ดูบัญชีพร้อมสิทธิ์
+      description: ดูได้เฉพาะ role ที่ต่ำกว่าตัวเอง (ของตัวเองดูที่ GET /api/auth/me)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: บัญชี
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountWithPermissions"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRuleViolation"
+        "404":
+          $ref: "#/components/responses/AdminNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    patch:
+      tags:
+        - Admins
+      summary: แก้บัญชี (ชื่อ, role, สถานะ, สิทธิ์)
+      description: >-
+        ต้องมีสิทธิ์ admins:update | แก้ได้เฉพาะ role ที่ต่ำกว่าตัวเอง และ role ใหม่ต้องต่ำกว่าตัวเอง
+        | permissions = แทนที่ทั้งชุด ให้ได้เฉพาะที่ตัวเองมี
+        | เปลี่ยน role, สถานะ หรือสิทธิ์แล้ว session ของบัญชีนั้นถูก revoke (ต้อง login ใหม่ให้สิทธิ์ใหม่มีผล)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                full_name:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+                status:
+                  type: string
+                  enum:
+                    - active
+                    - inactive
+                permissions:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Permission"
+      responses:
+        "200":
+          description: แก้แล้ว
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/MessageResponse"
+                  - $ref: "#/components/schemas/AccountWithPermissions"
+        "400":
+          $ref: "#/components/responses/AdminBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRuleViolation"
+        "404":
+          $ref: "#/components/responses/AdminNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    delete:
+      tags:
+        - Admins
+      summary: ลบบัญชี
+      description: ต้องมีสิทธิ์ admins:delete | ลบได้เฉพาะ role ที่ต่ำกว่าตัวเอง (สิทธิ์และ session ลบตามไปด้วย)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: ลบแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRuleViolation"
+        "404":
+          $ref: "#/components/responses/AdminNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
