@@ -1,0 +1,188 @@
+paths:
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login ด้วย username/password
+      description: >-
+        คืน access_token + refresh_token พร้อม profile และสิทธิ์ | หนึ่งบัญชีมีได้ session เดียว login ใหม่ = token ของ session เก่าใช้ไม่ได้ทันที
+        | รหัสผิด, ไม่มี username หรือบัญชีถูกปิด ตอบ 401 INVALID_CREDENTIALS เหมือนกัน
+        | จำกัด LOGIN_RATE_LIMIT_MAX_REQUESTS ครั้งต่อ RATE_LIMIT_WINDOW_MS ต่อ IP (ค่าเริ่มต้น 10 ครั้งต่อนาที)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                  example: owner
+                password:
+                  type: string
+                  format: password
+                  example: Owner@123456
+      responses:
+        "200":
+          description: Login สำเร็จ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TokenResponse"
+                  - type: object
+                    properties:
+                      profile:
+                        $ref: "#/components/schemas/AccountWithPermissions"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: username หรือรหัสผ่านไม่ถูกต้อง (INVALID_CREDENTIALS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status_code: 401
+                code: INVALID_CREDENTIALS
+                message: Invalid username or password.
+        "423":
+          description: >-
+            บัญชีถูกล็อกชั่วคราว (ACCOUNT_LOCKED) ใส่รหัสผิดติดกันครบ LOGIN_MAX_FAILED_ATTEMPTS ครั้ง (5) ล็อก LOGIN_LOCK_MINUTES นาที (15)
+            ระหว่างล็อกรหัสถูกก็เข้าไม่ได้ | login สำเร็จรีเซ็ตตัวนับ | ผู้ดูแลที่ role สูงกว่าปลดล็อกได้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status_code: 423
+                code: ACCOUNT_LOCKED
+                message: Too many failed login attempts. Account is temporarily locked.
+                locked_until: "2026-11-19T10:15:00.000Z"
+                retry_after_seconds: 900
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: ขอ token ชุดใหม่ด้วย refresh token
+      description: >-
+        refresh token ใช้ได้ครั้งเดียว (ใช้ซ้ำตอบ 401 INVALID_REFRESH_TOKEN) | สิทธิ์ใน access token ใหม่อ่านจาก DB ล่าสุด
+        | session มีอายุ JWT_REFRESH_EXPIRES_IN นับจาก login (ค่าเริ่มต้น 24 ชั่วโมง) ครบแล้วต้อง login ใหม่
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: Token ชุดใหม่
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: refresh token ผิด ใช้ไปแล้ว หรือ session ถูก revoke (INVALID_REFRESH_TOKEN) / หมดอายุ (TOKEN_EXPIRED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "423":
+          description: บัญชีถูกปิด (ACCOUNT_INACTIVE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout (revoke session ปัจจุบัน)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Logout สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: ข้อมูลบัญชีตัวเองพร้อมสิทธิ์ล่าสุด
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ข้อมูลบัญชี
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountWithPermissions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/auth/me/password:
+    patch:
+      tags:
+        - Auth
+      summary: เปลี่ยนรหัสผ่านของตัวเอง
+      description: session ปัจจุบันใช้ต่อได้ | รหัสใหม่ 8-128 ตัวและต้องไม่ซ้ำรหัสเดิม
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - current_password
+                - new_password
+              properties:
+                current_password:
+                  type: string
+                  format: password
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 128
+      responses:
+        "200":
+          description: เปลี่ยนรหัสผ่านแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: ข้อมูลไม่ผ่าน (VALIDATION_ERROR) หรือรหัสผ่านปัจจุบันผิด (INVALID_CURRENT_PASSWORD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"

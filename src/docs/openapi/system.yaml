@@ -1,0 +1,49 @@
+paths:
+  /:
+    get:
+      tags:
+        - System
+      summary: ตรวจสถานะทั้งหมดของ service
+      description: Route เดียวสำหรับเช็คสถานะ ทั้ง process และการเชื่อมต่อ database ใช้กับ health check ของ container ได้ด้วย ตอบ 503 เมื่อส่วนใดส่วนหนึ่งไม่พร้อม
+      responses:
+        "200":
+          description: ทุกส่วนพร้อมใช้งาน
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+        "503":
+          description: มีส่วนที่ไม่พร้อม (เช่น database เชื่อมต่อไม่ได้)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+              example:
+                status: error
+                database: unavailable
+                database_latency_ms: 3001
+                uptime_seconds: 3600
+                timestamp: "2026-11-17T08:00:00.000Z"
+components:
+  schemas:
+    SystemStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+          example: ok
+        database:
+          type: string
+          enum: [ok, unavailable]
+          example: ok
+        database_latency_ms:
+          type: integer
+          example: 2
+        uptime_seconds:
+          type: integer
+          example: 3600
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-11-17T08:00:00.000Z"

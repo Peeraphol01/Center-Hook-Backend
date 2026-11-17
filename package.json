@@ -1,0 +1,53 @@
+{
+  "name": "center-hook",
+  "version": "1.0.0",
+  "description": "LINE webhook router: routes LINE OA events to the owning project and logs every forward",
+  "main": "index.ts",
+  "private": true,
+  "type": "commonjs",
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": "1.4.4"
+  },
+  "scripts": {
+    "start": "bun index.ts",
+    "dev": "bun --watch index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "bunx --bun prisma generate",
+    "db:migrate": "bunx --bun prisma migrate dev",
+    "db:deploy": "bunx --bun prisma migrate deploy",
+    "db:seed": "bunx --bun prisma db seed",
+    "db:studio": "bunx --bun prisma studio",
+    "docker:db": "docker compose up -d postgres",
+    "test": "node --import tsx --experimental-test-module-mocks --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "argon2": "^0.45.2",
+    "dotenv": "^18.0.9",
+    "hono": "^4.13.16",
+    "hono-rate-limiter": "^0.5.4",
+    "jsonwebtoken": "^9.0.3",
+    "p-queue": "^10.0.0",
+    "pino": "^10.4.0",
+    "prisma": "7.10.1",
+    "swagger-ui-dist": "^5.35.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.6.6",
+    "@types/swagger-ui-dist": "^3.30.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "trustedDependencies": [
+    "@prisma/engines",
+    "argon2",
+    "esbuild",
+    "prisma"
+  ]
+}

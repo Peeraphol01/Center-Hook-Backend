@@ -1,0 +1,1312 @@
+{
+  "info": {
+    "name": "Center Hook",
+    "description": "Postman collection ของ Center Hook (LINE webhook router)\n\nเริ่มใช้: baseUrl ตั้งเป็น production (https://center-hook-backend.onrender.com) ถ้ารันในเครื่องให้เปลี่ยนเป็น http://localhost:<PORT>\nเริ่มจาก Auth > POST /api/auth/login (ใช้ ADMIN_USERNAME / ADMIN_PASSWORD) ระบบเก็บ accessToken ให้ Forward Logs, Webhooks และ Admins ใช้อัตโนมัติ (แต่ละเส้นต้องมีสิทธิ์ของตัวเอง ไม่มีตอบ 403 FORBIDDEN) token หมดอายุ 15 นาที เรียก Auth > Refresh\nLINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN ใช้ค่าเดียวกับ .env ของ server\nดูประวัติแชตใช้ LINE Official Account Manager ส่วน Forward Logs ไว้ดูว่า event ถูกส่งต่อไป project ไหนและสำเร็จหรือไม่\nRate limit: /api/auth, /api/admins, /api/forward-logs, /api/webhooks, /api-docs (login จำกัด 10 ครั้งต่อนาทีต่อ IP) จำกัด RATE_LIMIT_MAX_REQUESTS ต่อ RATE_LIMIT_WINDOW_MS เกินตอบ 429 RATE_LIMITED\nError ทุกตัวมีรูปแบบ { status_code, code, message, request_id }",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://center-hook-backend.onrender.com",
+      "description": "Production บน Render | รันในเครื่องให้เปลี่ยนเป็น http://localhost:<PORT>"
+    },
+    {
+      "key": "ADMIN_USERNAME",
+      "value": "owner",
+      "description": "username ที่ใช้ login (บัญชีทดสอบจาก bun run db:seed: owner / manager / admin)"
+    },
+    {
+      "key": "ADMIN_PASSWORD",
+      "value": "Owner@123456",
+      "description": "รหัสผ่านของ ADMIN_USERNAME (บัญชีทดสอบ: Owner@123456 / Manager@123456 / Admin@123456)"
+    },
+    {
+      "key": "forwardLogId",
+      "value": "1"
+    },
+    {
+      "key": "LINE_CHANNEL_SECRET",
+      "value": "",
+      "description": "ขากลับ: ใส่ค่าเดียวกับ LINE_CHANNEL_SECRET ใน .env ของ server ใช้เซ็น x-line-signature ของ POST /api/line/webhook"
+    },
+    {
+      "key": "LINE_CHANNEL_ACCESS_TOKEN",
+      "value": "",
+      "type": "string",
+      "description": "ขาไป: ใส่ค่าเดียวกับ LINE_CHANNEL_ACCESS_TOKEN ใน .env ของ server ใช้เป็น Authorization: Bearer ของ POST /api/line/push"
+    },
+    {
+      "key": "lineUserId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "webhookSmmApp",
+      "value": "newlabor",
+      "description": "smm_app ของ webhook ที่จะแก้/ลบ (default = webhook default) ตั้งอัตโนมัติจาก POST /api/webhooks"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "description": "เติมอัตโนมัติจาก Auth > Login และ Auth > Refresh"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "description": "เติมอัตโนมัติจาก Auth > Login และ Auth > Refresh"
+    },
+    {
+      "key": "adminId",
+      "value": "",
+      "description": "เติมอัตโนมัติจาก Admins > POST /api/admins"
+    }
+  ],
+  "item": [
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "GET / (Status)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json();",
+                  "pm.test(\"service ok\", () => pm.expect(data.status).to.eql(\"ok\"));",
+                  "pm.test(\"database ok\", () => pm.expect(data.database).to.eql(\"ok\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Public. Route เดียวสำหรับเช็คสถานะทั้งหมด (process + database)\n200 { status: ok, database: ok, database_latency_ms, uptime_seconds, timestamp }\n503 { status: error, database: unavailable, ... } เมื่อ database เชื่อมต่อไม่ได้"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "description": "Login ของผู้ดูแล (JWT) | Login / Refresh เก็บ accessToken และ refreshToken ลงตัวแปร collection ให้ request อื่นใช้อัตโนมัติ",
+      "item": [
+        {
+          "name": "POST /api/auth/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', body.access_token);",
+                  "pm.collectionVariables.set('refreshToken', body.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{ADMIN_USERNAME}}\",\n  \"password\": \"{{ADMIN_PASSWORD}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "หนึ่งบัญชีมี session เดียว login ใหม่ = token เดิมใช้ไม่ได้ | จำกัด 10 ครั้งต่อนาทีต่อ IP"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/auth/refresh",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', body.access_token);",
+                  "pm.collectionVariables.set('refreshToken', body.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "refresh token ใช้ได้ครั้งเดียว ได้ชุดใหม่ทุกครั้ง"
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/auth/me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ข้อมูลตัวเองพร้อมสิทธิ์ล่าสุด"
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/auth/me/password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"{{ADMIN_PASSWORD}}\",\n  \"new_password\": \"NewPassw0rd!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me/password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me",
+                "password"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "เปลี่ยนรหัสของตัวเอง (อย่าลืมแก้ ADMIN_PASSWORD ตามรหัสใหม่)"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/auth/logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "revoke session ปัจจุบัน"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admins",
+      "description": "จัดการบัญชีผู้ดูแล: จัดการได้เฉพาะ role ที่ต่ำกว่าตัวเอง (owner > manager > admin) และให้ได้เฉพาะสิทธิ์ที่ตัวเองมี | จัดการตัวเองใช้ Auth > me",
+      "item": [
+        {
+          "name": "GET /api/admins",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:read | can_manage = แก้/ลบบัญชีนั้นได้"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/admins",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('adminId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"somchai\",\n  \"password\": \"Somchai@123456\",\n  \"full_name\": \"สมชาย ใจดี\",\n  \"role\": \"admin\",\n  \"permissions\": [\n    \"forward_logs:read\",\n    \"webhooks:read\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:create | role ต้องต่ำกว่าตัวเอง | permissions ต้องระบุเสมอ และให้ได้เฉพาะที่ตัวเองมี"
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/admins/:id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admins/{{adminId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins",
+                "{{adminId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:read | ดูได้เฉพาะ role ที่ต่ำกว่า"
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/admins/:id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"สมชาย ใจดีมาก\",\n  \"status\": \"active\",\n  \"permissions\": [\n    \"forward_logs:read\",\n    \"webhooks:read\",\n    \"webhooks:create\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admins/{{adminId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins",
+                "{{adminId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:update | ส่งเฉพาะ field ที่จะแก้ | permissions = แทนที่ทั้งชุด | เปลี่ยน role/status/permissions แล้วบัญชีนั้นต้อง login ใหม่"
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/admins/:id/password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"new_password\": \"Reset@123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admins/{{adminId}}/password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins",
+                "{{adminId}}",
+                "password"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:reset_password | บัญชีนั้นถูก logout ทุก session"
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/admins/:id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admins/{{adminId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admins",
+                "{{adminId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "ต้องมีสิทธิ์ admins:delete | ลบได้เฉพาะ role ที่ต่ำกว่า"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Forward Logs",
+      "item": [
+        {
+          "name": "GET /api/forward-logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const first = pm.response.json().data?.[0];",
+                  "if (first) pm.collectionVariables.set('forwardLogId', String(first.id));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/forward-logs?page=1&limit=20&direction=OUTBOUND&status=FAILED&project=newlabor&line_user_id=&event_type=message&from=2026-11-01&to=2026-11-30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "forward-logs"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "direction",
+                  "value": "OUTBOUND",
+                  "description": "INBOUND | OUTBOUND",
+                  "disabled": false
+                },
+                {
+                  "key": "status",
+                  "value": "FAILED",
+                  "disabled": true,
+                  "description": "SUCCESS | FAILED | SKIPPED"
+                },
+                {
+                  "key": "project",
+                  "value": "newlabor",
+                  "disabled": true
+                },
+                {
+                  "key": "line_user_id",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "event_type",
+                  "value": "message",
+                  "disabled": true
+                },
+                {
+                  "key": "from",
+                  "value": "2026-11-01",
+                  "disabled": true,
+                  "description": "ISO date หรือ datetime"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-11-30",
+                  "disabled": true,
+                  "description": "ISO date หรือ datetime"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ forward_logs:read\nเก็บ id ของรายการแรกลง forwardLogId ให้ request ถัดไป"
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/forward-logs/:id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/forward-logs/{{forwardLogId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "forward-logs",
+                "{{forwardLogId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ forward_logs:read\n404 FORWARD_LOG_NOT_FOUND"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "GET /api/webhooks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ webhooks:read\nรายการ webhook: smm_app → webhook_url (null = default)"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/webhooks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('webhookSmmApp', data.smm_app ?? 'default');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"smm_app\": \"shop\",\n  \"webhook_url\": \"https://shop.example.com/api/line/webhook\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ webhooks:create\nเพิ่ม webhook { smm_app, webhook_url }\nsmm_app: null = webhook default (มีได้แถวเดียว)\n409 WEBHOOK_CONFLICT (smm_app ซ้ำ), 409 DEFAULT_WEBHOOK_EXISTS"
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/webhooks/:smm_app",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"webhook_url\": \"https://labor-api-wadtr.ondigitalocean.app/api/line/webhook\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/{{webhookSmmApp}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhookSmmApp}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ webhooks:update\nส่งเฉพาะ field ที่เปลี่ยน: smm_app, webhook_url (smm_app: null = ย้ายเป็น webhook default)\n404 WEBHOOK_NOT_FOUND, 409 WEBHOOK_CONFLICT, 409 DEFAULT_WEBHOOK_EXISTS"
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/webhooks/:smm_app",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/{{webhookSmmApp}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhookSmmApp}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Bearer {{accessToken}} (ได้จาก Auth > Login) ต้องมีสิทธิ์ webhooks:delete\nลบ webhook (ลบ default แล้ว event ที่ไม่มี smm_app จะเป็น SKIPPED) 404 WEBHOOK_NOT_FOUND"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "LINE",
+      "item": [
+        {
+          "name": "POST /api/line/webhook (ผู้ใช้พิมพ์ข้อความ → default)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// เซ็น raw body ด้วยตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) แบบ HMAC-SHA256 base64 เหมือน LINE แล้วใส่ใน header x-line-signature",
+                  "const secret = pm.variables.get('LINE_CHANNEL_SECRET');",
+                  "const body = pm.variables.replaceIn(pm.request.body.raw);",
+                  "const signature = CryptoJS.HmacSHA256(body, secret || '').toString(CryptoJS.enc.Base64);",
+                  "pm.variables.set('lineSignature', signature);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-line-signature",
+                "value": "{{lineSignature}}",
+                "type": "text",
+                "description": "ไม่ต้องใส่เอง: pre-request script คำนวณ HMAC-SHA256 ของ body ด้วยตัวแปร LINE_CHANNEL_SECRET แล้วใส่ใน lineSignature ทุกครั้งที่กด Send"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": \"U0123456789abcdef0123456789abcdef\",\n  \"events\": [\n    {\n      \"type\": \"message\",\n      \"mode\": \"active\",\n      \"timestamp\": 1763270000000,\n      \"webhookEventId\": \"01POSTMANTESTEVENT000000000\",\n      \"deliveryContext\": {\n        \"isRedelivery\": false\n      },\n      \"replyToken\": \"00000000000000000000000000000000\",\n      \"source\": {\n        \"type\": \"user\",\n        \"userId\": \"U00000000000000000000000000000000\"\n      },\n      \"message\": {\n        \"id\": \"1\",\n        \"type\": \"text\",\n        \"text\": \"test from postman\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/line/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "line",
+                "webhook"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "จำลอง LINE ส่ง event ตอนผู้ใช้พิมพ์ข้อความ (type = message) ไม่มี smm_app จึงไป webhook default\nขากลับ: ตั้งตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) ก่อน pre-request script จะเซ็น body ให้\nตอบ 200 { message, received } ทันที แล้วส่งต่อไป project ปลายทางเบื้องหลัง ดูผลที่ Forward Logs\n401 INVALID_LINE_SIGNATURE, 503 LINE_WEBHOOK_NOT_CONFIGURED\nข้อควรระวัง: event นี้ถูกส่งต่อไปปลายทางจริงตาม webhook_url ในตาราง webhooks\nพิมพ์ \"id\" (event ต้องมี replyToken) center-hook ตอบ \"Your user ID: <userId>\" ผ่าน Reply API แล้วยังส่งต่อไป webhook default"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/line/webhook (กดปุ่ม postback มี smm_app → project)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// เซ็น raw body ด้วยตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) แบบ HMAC-SHA256 base64 เหมือน LINE แล้วใส่ใน header x-line-signature",
+                  "const secret = pm.variables.get('LINE_CHANNEL_SECRET');",
+                  "const body = pm.variables.replaceIn(pm.request.body.raw);",
+                  "const signature = CryptoJS.HmacSHA256(body, secret || '').toString(CryptoJS.enc.Base64);",
+                  "pm.variables.set('lineSignature', signature);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-line-signature",
+                "value": "{{lineSignature}}",
+                "type": "text",
+                "description": "ไม่ต้องใส่เอง: pre-request script คำนวณ HMAC-SHA256 ของ body ด้วยตัวแปร LINE_CHANNEL_SECRET แล้วใส่ใน lineSignature ทุกครั้งที่กด Send"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": \"U0123456789abcdef0123456789abcdef\",\n  \"events\": [\n    {\n      \"type\": \"postback\",\n      \"mode\": \"active\",\n      \"timestamp\": 1763270000000,\n      \"webhookEventId\": \"01POSTMANTESTPOSTBACK0000000\",\n      \"deliveryContext\": {\n        \"isRedelivery\": false\n      },\n      \"replyToken\": \"00000000000000000000000000000000\",\n      \"source\": {\n        \"type\": \"user\",\n        \"userId\": \"U00000000000000000000000000000000\"\n      },\n      \"postback\": {\n        \"data\": \"smm_app=newlabor&token=postman-test\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/line/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "line",
+                "webhook"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "จำลอง LINE ส่ง event ตอนผู้ใช้กดปุ่มที่ project ส่งไป (type = postback)\ncenter-hook อ่าน smm_app จาก events[].postback.data (รูปแบบ query string) แล้วส่งต่อไป webhook_url ของ smm_app นั้นในตาราง webhooks (ไม่ตรงกับแถวไหน → default)\nขากลับ: ตั้งตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) ก่อน pre-request script จะเซ็น body ให้\nดูผลที่ Forward Logs (project = smm_app)\nข้อควรระวัง: event นี้ถูกส่งต่อไปปลายทางจริง (token=postman-test เป็นค่าปลอม project ปลายทางน่าจะตอบ error)"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/line/webhook (กดปุ่ม postback ไม่มี smm_app → default)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// เซ็น raw body ด้วยตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) แบบ HMAC-SHA256 base64 เหมือน LINE แล้วใส่ใน header x-line-signature",
+                  "const secret = pm.variables.get('LINE_CHANNEL_SECRET');",
+                  "const body = pm.variables.replaceIn(pm.request.body.raw);",
+                  "const signature = CryptoJS.HmacSHA256(body, secret || '').toString(CryptoJS.enc.Base64);",
+                  "pm.variables.set('lineSignature', signature);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "ไม่บังคับ ใช้ค้น log ระบบส่งค่ากลับใน response header X-Request-Id และใน error body (request_id)"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-line-signature",
+                "value": "{{lineSignature}}",
+                "type": "text",
+                "description": "ไม่ต้องใส่เอง: pre-request script คำนวณ HMAC-SHA256 ของ body ด้วยตัวแปร LINE_CHANNEL_SECRET แล้วใส่ใน lineSignature ทุกครั้งที่กด Send"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": \"U0123456789abcdef0123456789abcdef\",\n  \"events\": [\n    {\n      \"type\": \"postback\",\n      \"mode\": \"active\",\n      \"timestamp\": 1763270000000,\n      \"webhookEventId\": \"01POSTMANTESTPOSTBACKNOAPP00\",\n      \"deliveryContext\": {\n        \"isRedelivery\": false\n      },\n      \"replyToken\": \"00000000000000000000000000000000\",\n      \"source\": {\n        \"type\": \"user\",\n        \"userId\": \"U00000000000000000000000000000000\"\n      },\n      \"postback\": {\n        \"data\": \"action=confirm&token=postman-test\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/line/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "line",
+                "webhook"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "จำลอง LINE ส่ง event ตอนผู้ใช้กดปุ่มที่ไม่ได้ใส่ smm_app ใน data (type = postback)\nไม่มี smm_app ใน events[].postback.data จึงไป webhook default (smm_app ที่ไม่ได้ลงทะเบียน เช่น smm_app=unknown ก็ไป default เหมือนกัน)\nขากลับ: ตั้งตัวแปร LINE_CHANNEL_SECRET (ค่าเดียวกับ .env) ก่อน pre-request script จะเซ็น body ให้\nดูผลที่ Forward Logs (project = default)\nข้อควรระวัง: event นี้ถูกส่งต่อไป webhook default จริง"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/line/push",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('LINE sent message', () => pm.expect(pm.response.json().sentMessages).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{LINE_CHANNEL_ACCESS_TOKEN}}",
+                "type": "text",
+                "description": "LINE_CHANNEL_ACCESS_TOKEN ตัวเดียวกับของ server"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"smm_app\": \"newlabor\",\n  \"to\": \"{{lineUserId}}\",\n  \"retry_key\": \"{{$guid}}\",\n  \"messages\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"ทดสอบส่งข้อความจาก center-hook\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/line/push",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "line",
+                "push"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "ขาไป: Authorization: Bearer {{LINE_CHANNEL_ACCESS_TOKEN}} (ค่าเดียวกับ .env) (smm_app ต้องมีในตาราง webhooks): center-hook ตัด smm_app/retry_key ออกแล้วส่ง { to, messages } ไป LINE ตอบ status และ body ของ LINE ตามจริง\n401 INVALID_ACCESS_TOKEN, 400 UNKNOWN_SMM_APP, 502 LINE_API_UNAVAILABLE, 503 LINE_PUSH_NOT_CONFIGURED\nข้อควรระวัง: ข้อความถูกส่งหา lineUserId จริง"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
